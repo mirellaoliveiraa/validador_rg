@@ -1,0 +1,208 @@
+import tkinter as tk
+from tkinter import messagebox
+from PIL import Image, ImageTk
+import requests
+import io
+import json
+import os
+import hashlib
+import csv
+
+# Caminhos
+SAVE_FILE = "obstrucoes.json"
+INDEX_FILE = "index.json"
+EXPORT_JSON = "obstrucoes_filtradas.json"
+EXPORT_CSV = "obstrucoes_filtradas.csv"
+EXPORT_UUIDS = "uuids_com_valor_1.json"
+
+# Carrega URLs
+with open("1a leva.txt", "r") as file:
+    urls = [line.strip() for line in file.readlines() if line.strip()]
+
+data = [{"uuid": url.split("documents/")[1].split("/")[0], "url": url} for url in urls]
+
+# Marcações salvas
+if os.path.exists(SAVE_FILE):
+    with open(SAVE_FILE, "r") as f:
+        anotacoes = json.load(f)
+else:
+    anotacoes = {}
+
+# Posição atual
+if os.path.exists(INDEX_FILE):
+    with open(INDEX_FILE, "r") as f:
+        index = json.load(f).get("index", 0)
+else:
+    index = 0
+
+hashes_exibidos = set()
+
+# Interface
+root = tk.Tk()
+root.title("Validador de RGs")
+
+img_label = tk.Label(root)
+img_label.pack()
+
+uuid_label = tk.Label(root, text="")
+uuid_label.pack()
+
+checkbox_var = tk.IntVar()
+checkbox = tk.Checkbutton(root, text="Obstrução (1 = sim)", variable=checkbox_var)
+checkbox.pack()
+
+search_frame = tk.Frame(root)
+search_frame.pack()
+
+search_entry = tk.Entry(search_frame)
+search_entry.pack(side=tk.LEFT)
+
+def buscar_uuid():
+    global index
+    uuid = search_entry.get().strip()
+    for i, item in enumerate(data):
+        if item["uuid"] == uuid:
+            salvar_anotacao()
+            index = i
+            mostrar_imagem()
+            return
+    messagebox.showwarning("Não encontrado", "UUID não encontrado na lista.")
+
+search_btn = tk.Button(search_frame, text="Buscar UUID", command=buscar_uuid)
+search_btn.pack(side=tk.LEFT)
+
+def mostrar_imagem():
+    global img_label, uuid_label, checkbox_var, index
+
+    while index < len(data):
+        uuid = data[index]["uuid"]
+        url = data[index]["url"]
+        uuid_label.config(text=f"UUID: {uuid}")
+
+        try:
+            response = requests.get(url)
+            img_bytes = response.content
+
+            img_hash = hashlib.md5(img_bytes).hexdigest()
+            if img_hash in hashes_exibidos:
+                index += 1
+                continue
+            else:
+                hashes_exibidos.add(img_hash)
+
+            image = Image.open(io.BytesIO(img_bytes))
+            canvas_width, canvas_height = 400, 600
+            image.thumbnail((canvas_width, canvas_height), Image.Resampling.LANCZOS)
+
+            new_img = Image.new("RGB", (canvas_width, canvas_height), "white")
+            x_offset = (canvas_width - image.width) // 2
+            y_offset = (canvas_height - image.height) // 2
+            new_img.paste(image, (x_offset, y_offset))
+
+            photo = ImageTk.PhotoImage(new_img)
+            img_label.config(image=photo)
+            img_label.image = photo
+
+            checkbox_var.set(anotacoes.get(uuid, 0))
+            salvar_index()
+            return
+
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro ao carregar imagem: {e}")
+            return
+
+    messagebox.showinfo("Fim", "Nenhuma imagem nova restante.")
+    root.quit()
+
+def salvar_index():
+    with open(INDEX_FILE, "w") as f:
+        json.dump({"index": index}, f)
+
+def salvar_anotacao():
+    uuid = data[index]["uuid"]
+    anotacoes[uuid] = checkbox_var.get()
+    with open(SAVE_FILE, "w") as f:
+        json.dump(anotacoes, f, indent=2)
+    salvar_index()
+
+def proximo():
+    global index
+    salvar_anotacao()
+    if index < len(data) - 1:
+        index += 1
+        mostrar_imagem()
+
+def anterior():
+    global index
+    salvar_anotacao()
+    if index > 0:
+        index -= 1
+        mostrar_imagem()
+
+def filtrar_obstrucoes_marcadas():
+    if not anotacoes:
+        messagebox.showinfo("Info", "Nenhuma anotação encontrada.")
+        return
+
+    registros_filtrados = []
+    for item in data:
+        uuid = item["uuid"]
+        if anotacoes.get(uuid) == 1:
+            registros_filtrados.append({
+                "uuid": uuid,
+                "url": item["url"],
+                "obstrucao": 1
+            })
+
+    if not registros_filtrados:
+        messagebox.showinfo("Info", "Nenhum registro com obstrução (1) encontrado.")
+        return
+
+    with open(EXPORT_JSON, "w") as f_out:
+        json.dump(registros_filtrados, f_out, indent=2)
+
+    with open(EXPORT_CSV, "w", newline='', encoding="utf-8") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=["uuid", "url", "obstrucao"])
+        writer.writeheader()
+        writer.writerows(registros_filtrados)
+
+    messagebox.showinfo("Exportado", f"{len(registros_filtrados)} registros exportados para JSON e CSV.")
+
+def exportar_uuids_marcados_apenas():
+    if not anotacoes:
+        messagebox.showinfo("Info", "Nenhuma anotação encontrada.")
+        return
+
+    uuids_filtrados = {uuid: valor for uuid, valor in anotacoes.items() if valor == 1}
+
+    if not uuids_filtrados:
+        messagebox.showinfo("Info", "Nenhum UUID com valor 1 encontrado.")
+        return
+
+    with open(EXPORT_UUIDS, "w") as f:
+        json.dump(uuids_filtrados, f, indent=2)
+
+    messagebox.showinfo("Exportado", f"{len(uuids_filtrados)} UUIDs com valor 1 salvos em '{EXPORT_UUIDS}'.")
+
+# Botões
+btn_frame = tk.Frame(root)
+btn_frame.pack()
+
+prev_btn = tk.Button(btn_frame, text="Anterior", command=anterior)
+prev_btn.pack(side=tk.LEFT, padx=10)
+
+next_btn = tk.Button(btn_frame, text="Próximo", command=proximo)
+next_btn.pack(side=tk.RIGHT, padx=10)
+
+salvar_btn = tk.Button(root, text="Salvar", command=salvar_anotacao)
+salvar_btn.pack(pady=5)
+
+exportar_btn = tk.Button(root, text="Exportar marcados (1)", command=filtrar_obstrucoes_marcadas)
+exportar_btn.pack(pady=5)
+
+exportar_uuids_btn = tk.Button(root, text="Exportar UUIDs (valor 1)", command=exportar_uuids_marcados_apenas)
+exportar_uuids_btn.pack(pady=5)
+
+# Início
+mostrar_imagem()
+root.mainloop()
